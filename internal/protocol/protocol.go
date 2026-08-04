@@ -26,6 +26,14 @@ const (
 	TypeVoteResponse          MessageType = "VOTE_RESPONSE"
 	TypeAppendEntries         MessageType = "APPEND_ENTRIES"
 	TypeAppendEntriesResponse MessageType = "APPEND_ENTRIES_RESPONSE"
+
+	// Client-facing RPCs, phase 5. Like everything else, only the
+	// currently-elected leader accepts these — a follower responds with
+	// the same Ack{OK:false, Error:"not leader"} a worker gets, so
+	// internal/client's discovery loop tries the next address.
+	TypeSubmitTask   MessageType = "SUBMIT_TASK"
+	TypeQueryResult  MessageType = "QUERY_RESULT"
+	TypeResultStatus MessageType = "RESULT_STATUS"
 )
 
 // Envelope is the outer frame every message is wrapped in: a type tag plus
@@ -82,6 +90,27 @@ type AppendEntries struct {
 type AppendEntriesResponse struct {
 	Term    int  `json:"term"`
 	Success bool `json:"success"`
+}
+
+// SubmitTask is a client asking the leader to enqueue t. The client
+// picks the ID itself (rather than the leader generating one and
+// returning it) so it already knows what to ask QueryResult for.
+type SubmitTask struct {
+	Task task.Task `json:"task"`
+}
+
+type QueryResult struct {
+	TaskID string `json:"task_id"`
+}
+
+// ResultStatus answers QueryResult. Found is false both for a task that
+// is still queued/in-flight and for one this leader simply never heard
+// of — including a task that completed on a *previous* leader before a
+// failover, since results aren't replicated (see information.md). The
+// client can't tell those cases apart, and says so.
+type ResultStatus struct {
+	Found  bool        `json:"found"`
+	Result task.Result `json:"result"`
 }
 
 // WriteMessage marshals payload, wraps it in an Envelope, and writes it as

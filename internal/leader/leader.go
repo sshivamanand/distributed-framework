@@ -155,29 +155,59 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	case protocol.TypeAppendEntries:
 		s.Raft.HandleAppendEntriesConn(conn, env)
 		return
-	case protocol.TypeRegisterWorker:
-		// handled below; a switch case can't easily "fall through" past
-		// the network dispatch above, so the worker path lives in its
-		// own function instead.
+	case protocol.TypeRegisterWorker, protocol.TypeSubmitTask, protocol.TypeQueryResult:
+		// All three need this node to actually be the elected leader,
+		// checked once below; a switch case can't easily "fall through"
+		// past that check, so each path lives in its own function.
 	default:
 		log.Printf("leader: unexpected first message type %s", env.Type)
 		return
 	}
 
 	if !s.Raft.IsLeader() {
-		// Not a rejection of the worker itself — just "ask someone
-		// else": the worker's own discovery loop tries the next address
-		// in its configured list.
+		// Not a rejection of the caller itself — just "ask someone
+		// else": both worker.Client's and internal/client's discovery
+		// loops try the next address in their configured list.
 		protocol.WriteMessage(conn, protocol.TypeAck, protocol.Ack{OK: false, Error: "not leader"})
 		return
 	}
 
-	var reg protocol.RegisterWorker
-	if err := json.Unmarshal(env.Payload, &reg); err != nil {
-		log.Printf("leader: bad registration payload: %v", err)
+	switch env.Type {
+	case protocol.TypeRegisterWorker:
+		var reg protocol.RegisterWorker
+		if err := json.Unmarshal(env.Payload, &reg); err != nil {
+			log.Printf("leader: bad registration payload: %v", err)
+			return
+		}
+		s.handleWorkerConn(ctx, conn, r, reg)
+	case protocol.TypeSubmitTask:
+		s.handleSubmitTask(ctx, conn, env)
+	case protocol.TypeQueryResult:
+		s.handleQueryResult(conn, env)
+	}
+}
+
+func (s *Server) handleSubmitTask(ctx context.Context, conn net.Conn, env protocol.Envelope) {
+	var st protocol.SubmitTask
+	if err := json.Unmarshal(env.Payload, &st); err != nil {
+		protocol.WriteMessage(conn, protocol.TypeAck, protocol.Ack{OK: false, Error: "bad payload"})
 		return
 	}
-	s.handleWorkerConn(ctx, conn, r, reg)
+	if err := s.Queue.Submit(ctx, st.Task); err != nil {
+		protocol.WriteMessage(conn, protocol.TypeAck, protocol.Ack{OK: false, Error: err.Error()})
+		return
+	}
+	log.Printf("leader: client submitted task %s", st.Task.ID)
+	protocol.WriteMessage(conn, protocol.TypeAck, protocol.Ack{OK: true})
+}
+
+func (s *Server) handleQueryResult(conn net.Conn, env protocol.Envelope) {
+	var qr protocol.QueryResult
+	if err := json.Unmarshal(env.Payload, &qr); err != nil {
+		return
+	}
+	res, ok := s.Results.Get(qr.TaskID)
+	protocol.WriteMessage(conn, protocol.TypeResultStatus, protocol.ResultStatus{Found: ok, Result: res})
 }
 
 func (s *Server) handleWorkerConn(ctx context.Context, conn net.Conn, r *bufio.Reader, reg protocol.RegisterWorker) {
