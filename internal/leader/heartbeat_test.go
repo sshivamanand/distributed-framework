@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sshivamanand/distributed-task-framework/internal/raft"
 	"github.com/sshivamanand/distributed-task-framework/internal/registry"
 	"github.com/sshivamanand/distributed-task-framework/internal/task"
 )
@@ -17,7 +18,7 @@ import (
 func TestReapStaleWorkers_RequeuesInFlightTask(t *testing.T) {
 	queue := task.NewQueue(4)
 	results := task.NewResultStore()
-	s := NewServer(queue, results)
+	s := NewServer(queue, results, raft.NewNode("test-node", nil))
 	s.HeartbeatTimeout = 30 * time.Millisecond
 
 	staleTime := time.Now().Add(-time.Hour) // already older than any timeout
@@ -60,7 +61,7 @@ func TestReapStaleWorkers_RequeuesInFlightTask(t *testing.T) {
 func TestReapStaleWorkers_LeavesFreshWorkersAlone(t *testing.T) {
 	queue := task.NewQueue(4)
 	results := task.NewResultStore()
-	s := NewServer(queue, results)
+	s := NewServer(queue, results, raft.NewNode("test-node", nil))
 	s.HeartbeatTimeout = time.Hour
 
 	s.Registry.Register("w1", "127.0.0.1:9001", time.Now())
@@ -81,7 +82,7 @@ func TestReapStaleWorkers_LeavesFreshWorkersAlone(t *testing.T) {
 func TestHeartbeatMonitor_RunsUntilContextCancelled(t *testing.T) {
 	queue := task.NewQueue(1)
 	results := task.NewResultStore()
-	s := NewServer(queue, results)
+	s := NewServer(queue, results, raft.NewNode("test-node", nil))
 	s.HeartbeatTimeout = 20 * time.Millisecond
 	s.HeartbeatCheckInterval = 5 * time.Millisecond
 

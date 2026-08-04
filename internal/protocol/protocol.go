@@ -17,6 +17,15 @@ const (
 	TypeTaskAssignment MessageType = "TASK_ASSIGNMENT"
 	TypeTaskCompleted  MessageType = "TASK_COMPLETED"
 	TypeAck            MessageType = "ACK"
+
+	// Raft-inspired leader election RPCs, phase 4. They share this same
+	// newline-delimited-JSON envelope and, in the leader binary, the same
+	// TCP listener as worker traffic — the first message on a connection
+	// tells the accept loop which kind of peer it's talking to.
+	TypeRequestVote           MessageType = "REQUEST_VOTE"
+	TypeVoteResponse          MessageType = "VOTE_RESPONSE"
+	TypeAppendEntries         MessageType = "APPEND_ENTRIES"
+	TypeAppendEntriesResponse MessageType = "APPEND_ENTRIES_RESPONSE"
 )
 
 // Envelope is the outer frame every message is wrapped in: a type tag plus
@@ -46,6 +55,33 @@ type TaskCompleted struct {
 type Ack struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+// RequestVote is a candidate asking a peer for its vote in an election
+// for Term. There is no last-log-index/term to compare (no replicated
+// log in this project — see information.md), so vote granting is
+// decided on term number alone.
+type RequestVote struct {
+	Term        int    `json:"term"`
+	CandidateID string `json:"candidate_id"`
+}
+
+type VoteResponse struct {
+	Term        int  `json:"term"`
+	VoteGranted bool `json:"vote_granted"`
+}
+
+// AppendEntries is heartbeat-only in this project: a leader's periodic
+// "I'm still here" to its peers. Real Raft also carries log entries;
+// this project deliberately doesn't replicate a log, so there are none.
+type AppendEntries struct {
+	Term     int    `json:"term"`
+	LeaderID string `json:"leader_id"`
+}
+
+type AppendEntriesResponse struct {
+	Term    int  `json:"term"`
+	Success bool `json:"success"`
 }
 
 // WriteMessage marshals payload, wraps it in an Envelope, and writes it as

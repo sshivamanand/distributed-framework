@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sshivamanand/distributed-task-framework/internal/leader"
+	"github.com/sshivamanand/distributed-task-framework/internal/raft"
 	"github.com/sshivamanand/distributed-task-framework/internal/task"
 	"github.com/sshivamanand/distributed-task-framework/internal/worker"
 )
@@ -24,15 +25,16 @@ func TestLeaderWorker_EndToEndTaskExecution(t *testing.T) {
 
 	queue := task.NewQueue(4)
 	results := task.NewResultStore()
-	srv := leader.NewServer(queue, results)
+	srv := leader.NewServer(queue, results, raft.NewNode("solo", nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	go srv.Raft.Run(ctx)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ctx, ln) }()
 
-	w := &worker.Client{ID: "w1", LeaderAddr: ln.Addr().String(), Concurrency: 2}
+	w := &worker.Client{ID: "w1", LeaderAddrs: []string{ln.Addr().String()}, Concurrency: 2}
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- w.Run(ctx) }()
 
@@ -78,11 +80,12 @@ func TestLeaderWorker_ReassignsTaskWhenWorkerConnectionDrops(t *testing.T) {
 
 	queue := task.NewQueue(4)
 	results := task.NewResultStore()
-	srv := leader.NewServer(queue, results)
+	srv := leader.NewServer(queue, results, raft.NewNode("solo", nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	go srv.Raft.Run(ctx)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(ctx, ln) }()
 
@@ -90,7 +93,7 @@ func TestLeaderWorker_ReassignsTaskWhenWorkerConnectionDrops(t *testing.T) {
 	// task below. Its context is independent of the test's so it can be
 	// killed on its own, without tearing down the leader or w2.
 	w1Ctx, cancelW1 := context.WithCancel(context.Background())
-	w1 := &worker.Client{ID: "w1", LeaderAddr: ln.Addr().String(), Concurrency: 1}
+	w1 := &worker.Client{ID: "w1", LeaderAddrs: []string{ln.Addr().String()}, Concurrency: 1}
 	w1Done := make(chan error, 1)
 	go func() { w1Done <- w1.Run(w1Ctx) }()
 
@@ -112,7 +115,7 @@ func TestLeaderWorker_ReassignsTaskWhenWorkerConnectionDrops(t *testing.T) {
 		t.Fatal("w1 did not shut down after its context was cancelled")
 	}
 
-	w2 := &worker.Client{ID: "w2", LeaderAddr: ln.Addr().String(), Concurrency: 1}
+	w2 := &worker.Client{ID: "w2", LeaderAddrs: []string{ln.Addr().String()}, Concurrency: 1}
 	w2Done := make(chan error, 1)
 	go func() { w2Done <- w2.Run(ctx) }()
 

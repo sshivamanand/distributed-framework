@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sshivamanand/distributed-task-framework/internal/protocol"
+	"github.com/sshivamanand/distributed-task-framework/internal/raft"
 	"github.com/sshivamanand/distributed-task-framework/internal/registry"
 	"github.com/sshivamanand/distributed-task-framework/internal/task"
 )
@@ -25,13 +26,17 @@ const (
 	DefaultHeartbeatCheckInterval = 1 * time.Second
 )
 
-// Server is the leader node: it accepts worker connections, dispatches
-// queued tasks to registered workers round-robin, records completed
-// results, and reassigns tasks stranded by a dead worker.
+// Server is the leader-eligible node: it accepts worker connections and
+// peer election RPCs on the same listener, dispatches queued tasks to
+// registered workers round-robin, records completed results, and
+// reassigns tasks stranded by a dead worker. It only accepts worker
+// registrations while its embedded Raft node is actually the elected
+// leader; see handleConn.
 type Server struct {
 	Registry *registry.Registry
 	Queue    *task.Queue
 	Results  *task.ResultStore
+	Raft     *raft.Node
 
 	// HeartbeatTimeout and HeartbeatCheckInterval configure the failure
 	// detector; NewServer sets sane defaults, tests may shrink them.
@@ -39,9 +44,14 @@ type Server struct {
 	HeartbeatCheckInterval time.Duration
 
 	mu       sync.Mutex
-	conns    map[string]chan task.Task     // workerID -> its pending-assignment channel
+	conns    map[string]workerConn         // workerID -> its connection + pending-assignment channel
 	inFlight map[string]inFlightAssignment // taskID -> which worker it was handed to
 	nextIdx  int
+}
+
+type workerConn struct {
+	conn        net.Conn
+	assignments chan task.Task
 }
 
 // inFlightAssignment records that a task has been handed to a worker but
@@ -52,15 +62,45 @@ type inFlightAssignment struct {
 	WorkerID string
 }
 
-func NewServer(queue *task.Queue, results *task.ResultStore) *Server {
-	return &Server{
+// NewServer wires r's OnBecomeFollower so that if this node is ever
+// demoted, every worker currently registered with it gets disconnected —
+// they need to rediscover whoever the new leader is, since (by design;
+// see information.md) leadership doesn't carry any queue/registry state
+// with it.
+func NewServer(queue *task.Queue, results *task.ResultStore, r *raft.Node) *Server {
+	s := &Server{
 		Registry:               registry.New(),
 		Queue:                  queue,
 		Results:                results,
+		Raft:                   r,
 		HeartbeatTimeout:       DefaultHeartbeatTimeout,
 		HeartbeatCheckInterval: DefaultHeartbeatCheckInterval,
-		conns:                  make(map[string]chan task.Task),
+		conns:                  make(map[string]workerConn),
 		inFlight:               make(map[string]inFlightAssignment),
+	}
+	r.OnBecomeFollower = s.dropAllWorkers
+	return s
+}
+
+// dropAllWorkers closes every currently-registered worker's connection.
+// Each connection's own read loop (in handleWorkerConn) then runs its
+// normal dead-worker cleanup — marking it DEAD and requeuing whatever it
+// had in flight — so demotion reuses the exact same fast failure-
+// detection path a worker crash would take, rather than needing its own
+// cleanup logic.
+func (s *Server) dropAllWorkers() {
+	s.mu.Lock()
+	conns := make([]net.Conn, 0, len(s.conns))
+	for _, wc := range s.conns {
+		conns = append(conns, wc.conn)
+	}
+	s.mu.Unlock()
+
+	for _, c := range conns {
+		c.Close()
+	}
+	if len(conns) > 0 {
+		log.Printf("leader: stepped down, dropped %d worker connection(s)", len(conns))
 	}
 }
 
@@ -88,6 +128,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
+// handleConn is the single entry point for every connection this node
+// accepts, whether it turns out to be a worker or a fellow raft peer:
+// the first message's type is what tells them apart, so both kinds of
+// traffic can share one TCP listener rather than needing a second port.
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
@@ -100,19 +144,43 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 
 	env, err := protocol.ReadMessage(r)
 	if err != nil {
-		log.Printf("leader: reading registration: %v", err)
+		log.Printf("leader: reading first message: %v", err)
 		return
 	}
-	if env.Type != protocol.TypeRegisterWorker {
-		log.Printf("leader: expected %s, got %s", protocol.TypeRegisterWorker, env.Type)
+
+	switch env.Type {
+	case protocol.TypeRequestVote:
+		s.Raft.HandleRequestVoteConn(conn, env)
+		return
+	case protocol.TypeAppendEntries:
+		s.Raft.HandleAppendEntriesConn(conn, env)
+		return
+	case protocol.TypeRegisterWorker:
+		// handled below; a switch case can't easily "fall through" past
+		// the network dispatch above, so the worker path lives in its
+		// own function instead.
+	default:
+		log.Printf("leader: unexpected first message type %s", env.Type)
 		return
 	}
+
+	if !s.Raft.IsLeader() {
+		// Not a rejection of the worker itself — just "ask someone
+		// else": the worker's own discovery loop tries the next address
+		// in its configured list.
+		protocol.WriteMessage(conn, protocol.TypeAck, protocol.Ack{OK: false, Error: "not leader"})
+		return
+	}
+
 	var reg protocol.RegisterWorker
 	if err := json.Unmarshal(env.Payload, &reg); err != nil {
 		log.Printf("leader: bad registration payload: %v", err)
 		return
 	}
+	s.handleWorkerConn(ctx, conn, r, reg)
+}
 
+func (s *Server) handleWorkerConn(ctx context.Context, conn net.Conn, r *bufio.Reader, reg protocol.RegisterWorker) {
 	// The registry records the connection's observed remote address
 	// rather than trusting a self-reported one from the worker.
 	s.Registry.Register(reg.WorkerID, conn.RemoteAddr().String(), time.Now())
@@ -123,7 +191,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 
 	assignments := make(chan task.Task, 8)
 	s.mu.Lock()
-	s.conns[reg.WorkerID] = assignments
+	s.conns[reg.WorkerID] = workerConn{conn: conn, assignments: assignments}
 	s.mu.Unlock()
 
 	defer func() {
@@ -135,7 +203,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		// soon as the read loop below errors out — no need to wait for
 		// the heartbeat timeout. A worker that's merely hung (still
 		// connected, but wedged) won't hit this path; that's what the
-		// slower heartbeatMonitor is for.
+		// slower heartbeatMonitor is for. This same path also fires when
+		// dropAllWorkers closes the connection on demotion.
 		s.Registry.MarkDead(reg.WorkerID)
 		s.requeueWorkerTasks(ctx, reg.WorkerID)
 		log.Printf("leader: worker %s disconnected", reg.WorkerID)
@@ -199,7 +268,7 @@ func (s *Server) assign(ctx context.Context, t task.Task) {
 		if len(alive) > 0 {
 			s.mu.Lock()
 			w := alive[s.nextIdx%len(alive)]
-			ch, ok := s.conns[w.ID]
+			wc, ok := s.conns[w.ID]
 			s.nextIdx++
 			if ok {
 				s.inFlight[t.ID] = inFlightAssignment{Task: t, WorkerID: w.ID}
@@ -207,7 +276,7 @@ func (s *Server) assign(ctx context.Context, t task.Task) {
 			s.mu.Unlock()
 			if ok {
 				select {
-				case ch <- t:
+				case wc.assignments <- t:
 					return
 				case <-ctx.Done():
 					return
