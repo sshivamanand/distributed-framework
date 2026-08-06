@@ -1,0 +1,67 @@
+# One command (`docker compose up`) brings up the whole cluster: 3
+# leader-eligible nodes (a real quorum — 3 is the smallest cluster size
+# where killing one node still leaves a majority able to re-elect) and 3
+# workers. Nodes address each other by Compose service name, which
+# Compose's built-in DNS resolves within the network, so no IPs are
+# hardcoded anywhere.
+#
+# `client` isn't started by a plain `docker compose up` — it's a
+# profile-gated, one-shot tool, invoked per command:
+#   docker compose run --rm client -leaders leader1:8080,leader2:8080,leader3:8080 submit echo hello
+#   docker compose run --rm client -leaders leader1:8080,leader2:8080,leader3:8080 result <task-id>
+
+services:
+  leader1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: leader
+    command: ["-id", "leader1", "-addr", ":8080", "-peers", "leader2:8080,leader3:8080"]
+    ports:
+      - "8081:8080"
+
+  leader2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: leader
+    command: ["-id", "leader2", "-addr", ":8080", "-peers", "leader1:8080,leader3:8080"]
+    ports:
+      - "8082:8080"
+
+  leader3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: leader
+    command: ["-id", "leader3", "-addr", ":8080", "-peers", "leader1:8080,leader2:8080"]
+    ports:
+      - "8083:8080"
+
+  worker1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    command: ["-id", "worker1", "-leaders", "leader1:8080,leader2:8080,leader3:8080", "-concurrency", "2"]
+
+  worker2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    command: ["-id", "worker2", "-leaders", "leader1:8080,leader2:8080,leader3:8080", "-concurrency", "2"]
+
+  worker3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    command: ["-id", "worker3", "-leaders", "leader1:8080,leader2:8080,leader3:8080", "-concurrency", "2"]
+
+  client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: client
+    profiles: ["cli"]
