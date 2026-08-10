@@ -1,0 +1,61 @@
+$ ./demo.sh
+
+=== Bringing up the cluster (3 leader-eligible nodes + 3 workers) ===
+
+ Image distributed-framework-leader1 Built
+ Image distributed-framework-leader2 Built
+ Image distributed-framework-leader3 Built
+ Image distributed-framework-worker1 Built
+ Image distributed-framework-worker2 Built
+ Image distributed-framework-worker3 Built
+ Network distributed-framework_default Created
+ Container distributed-framework-leader1-1 Started
+ Container distributed-framework-leader2-1 Started
+ Container distributed-framework-leader3-1 Started
+ Container distributed-framework-worker1-1 Started
+ Container distributed-framework-worker2-1 Started
+ Container distributed-framework-worker3-1 Started
+
+NAME                              IMAGE                           COMMAND                  SERVICE   STATUS
+distributed-framework-leader1-1   distributed-framework-leader1   "leader -id leader1 …"   leader1   Up 5 seconds
+distributed-framework-leader2-1   distributed-framework-leader2   "leader -id leader2 …"   leader2   Up 5 seconds
+distributed-framework-leader3-1   distributed-framework-leader3   "leader -id leader3 …"   leader3   Up 5 seconds
+distributed-framework-worker1-1   distributed-framework-worker1   "worker -id worker1 …"   worker1   Up 5 seconds
+distributed-framework-worker2-1   distributed-framework-worker2   "worker -id worker2 …"   worker2   Up 5 seconds
+distributed-framework-worker3-1   distributed-framework-worker3   "worker -id worker3 …"   worker3   Up 5 seconds
+
+=== Submitting task #1 ===
+
+demo-task-1
+status: COMPLETED
+output: hello before failover
+
+=== Finding the current leader ===
+
+Current leader is: leader1
+
+=== Killing the leader (leader1) mid-run ===
+
+ Container distributed-framework-leader1-1 Killing
+ Container distributed-framework-leader1-1 Killed
+
+=== Re-election in the container logs ===
+
+leader2-1  | 2026/08/10 05:45:46 raft[leader2]: won election for term 2 with 2/3 votes
+leader2-1  | 2026/08/10 05:45:46 leader: worker worker3 registered from 172.23.0.6:40178
+leader2-1  | 2026/08/10 05:45:46 leader: worker worker1 registered from 172.23.0.2:56858
+leader2-1  | 2026/08/10 05:45:46 leader: worker worker2 registered from 172.23.0.5:58208
+leader3-1  | 2026/08/10 05:45:38 raft[leader3]: stepping down to FOLLOWER, adopting term 1
+leader3-1  | 2026/08/10 05:45:46 raft[leader3]: stepping down to FOLLOWER, adopting term 2
+leader1-1  | 2026/08/10 05:45:38 raft[leader1]: won election for term 1 with 3/3 votes
+leader1-1  | 2026/08/10 05:45:39 leader: worker worker1 registered from 172.23.0.2:55898
+leader1-1  | 2026/08/10 05:45:39 leader: worker worker3 registered from 172.23.0.6:56492
+leader1-1  | 2026/08/10 05:45:39 leader: worker worker2 registered from 172.23.0.5:52614
+
+=== Submitting task #2 (after failover — proves the cluster still works, not just that it's alive) ===
+
+demo-task-2
+status: COMPLETED
+output: still alive after failover
+
+=== Done. Cluster is still running — run 'docker compose down' when finished exploring. ===
