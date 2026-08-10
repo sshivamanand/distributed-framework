@@ -12,11 +12,15 @@ RUN CGO_ENABLED=0 go build -o /out/client ./cmd/client
 
 FROM alpine:3.20 AS leader
 COPY --from=builder /out/leader /usr/local/bin/leader
-ENTRYPOINT ["leader"]
+COPY docker/leader-entrypoint.sh /usr/local/bin/leader-entrypoint.sh
+RUN chmod +x /usr/local/bin/leader-entrypoint.sh
+ENTRYPOINT ["leader-entrypoint.sh"]
 
 FROM alpine:3.20 AS worker
 COPY --from=builder /out/worker /usr/local/bin/worker
-ENTRYPOINT ["worker"]
+COPY docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
+RUN chmod +x /usr/local/bin/worker-entrypoint.sh
+ENTRYPOINT ["worker-entrypoint.sh"]
 
 FROM alpine:3.20 AS client
 COPY --from=builder /out/client /usr/local/bin/client

@@ -1,0 +1,17 @@
+# clusterIP: None makes this a "headless" Service: instead of load-
+# balancing, it gives each leader pod its own stable DNS name
+# (leader-0.leader-headless, leader-1.leader-headless, ...) — exactly
+# what peer addressing needs, since "any leader" isn't good enough for
+# RequestVote/AppendEntries RPCs that have to reach a *specific* peer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: leader-headless
+  namespace: distributed-framework
+spec:
+  clusterIP: None
+  selector:
+    app: leader
+  ports:
+    - port: 8080
+      name: tcp

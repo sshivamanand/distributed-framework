@@ -1,0 +1,74 @@
+$ ./k8s-demo.sh
+
+=== Building images ===
+
+ ... (docker build output omitted — see demo-output.txt for the equivalent) ...
+
+=== Applying manifests ===
+
+namespace/distributed-framework created
+service/leader-headless created
+statefulset.apps/leader created
+deployment.apps/worker created
+Waiting for 3 pods to be ready...
+deployment "worker" successfully rolled out
+
+NAME                      READY   STATUS    RESTARTS   AGE
+leader-0                  1/1     Running   0          5s
+leader-1                  1/1     Running   0          4s
+leader-2                  1/1     Running   0          2s
+worker-58d8db4b4b-4rx27   1/1     Running   0          5s
+worker-58d8db4b4b-7v99c   1/1     Running   0          5s
+worker-58d8db4b4b-9r8h8   1/1     Running   0          5s
+
+=== Submitting task #1 ===
+
+k8s-task-1
+status: COMPLETED
+output: hello from kubernetes
+
+=== Scaling workers 3 -> 6 ===
+
+deployment.apps/worker scaled
+NAME                      READY   STATUS    RESTARTS   AGE
+worker-58d8db4b4b-2wnmf   1/1     Running   0          6s
+worker-58d8db4b4b-4rx27   1/1     Running   0          16s
+worker-58d8db4b4b-7v99c   1/1     Running   0          16s
+worker-58d8db4b4b-9drpz   1/1     Running   0          6s
+worker-58d8db4b4b-9r8h8   1/1     Running   0          16s
+worker-58d8db4b4b-glz26   1/1     Running   0          6s
+
+=== Scaling workers 6 -> 2 ===
+
+deployment.apps/worker scaled
+NAME                      READY   STATUS    RESTARTS   AGE
+worker-58d8db4b4b-7v99c   1/1     Running   0          22s
+worker-58d8db4b4b-9r8h8   1/1     Running   0          22s
+
+=== Finding the current leader ===
+
+Current leader is: leader-0
+
+=== Deleting the leader pod (leader-0) mid-run ===
+
+pod "leader-0" deleted from distributed-framework namespace
+NAME       READY   STATUS    RESTARTS   AGE
+leader-0   1/1     Running   0          8s
+leader-1   1/1     Running   0          30s
+leader-2   1/1     Running   0          28s
+
+=== Re-election in the container logs ===
+
+raft[leader-0]: stepping down to FOLLOWER, adopting term 3
+raft[leader-1]: stepping down to FOLLOWER, adopting term 2
+raft[leader-1]: won election for term 3 with 2/3 votes
+raft[leader-2]: stepping down to FOLLOWER, adopting term 2
+raft[leader-2]: stepping down to FOLLOWER, adopting term 3
+
+=== Submitting task #2 (after the leader pod was replaced) ===
+
+k8s-task-2
+status: COMPLETED
+output: still alive after pod failover
+
+=== Done. Cluster is still running — run 'kubectl delete namespace distributed-framework' when finished exploring. ===

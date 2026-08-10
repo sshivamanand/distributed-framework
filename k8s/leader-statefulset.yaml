@@ -1,0 +1,44 @@
+# A StatefulSet, not a Deployment, because leader nodes need stable
+# identity: each replica's own pod name (leader-0, leader-1, leader-2)
+# and DNS entry stay fixed across restarts, which is what lets
+# leader-entrypoint.sh derive a consistent -id and -peers list purely
+# from $HOSTNAME with no per-pod manifest needed.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: leader
+  namespace: distributed-framework
+spec:
+  serviceName: leader-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: leader
+  template:
+    metadata:
+      labels:
+        app: leader
+    spec:
+      containers:
+        - name: leader
+          image: distributed-framework-leader:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            # Read by leader-entrypoint.sh to compute this pod's peers
+            # from its own ordinal — see that script for the logic.
+            - name: REPLICAS
+              value: "3"
+            - name: HEADLESS_SERVICE
+              value: "leader-headless"
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

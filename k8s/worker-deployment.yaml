@@ -1,0 +1,32 @@
+# A plain Deployment, not a StatefulSet: workers don't need stable
+# identity (worker-entrypoint.sh just uses each pod's own unique
+# hostname as its ID), which is exactly what makes them freely,
+# arbitrarily scalable — `kubectl scale deployment worker --replicas=N`
+# just works, no manifest changes needed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: distributed-framework
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: distributed-framework-worker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            # Must list the same 3 leader pods as
+            # leader-statefulset.yaml's REPLICAS — there's no dynamic
+            # discovery here, same as docker-compose.yml.
+            - name: LEADERS
+              value: "leader-0.leader-headless:8080,leader-1.leader-headless:8080,leader-2.leader-headless:8080"
+            - name: CONCURRENCY
+              value: "2"

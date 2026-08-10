@@ -102,6 +102,71 @@ Full unabridged output: [demo-output.txt](demo-output.txt).
 
 </details>
 
+## Kubernetes
+
+The same images also run on a real cluster (`k8s/`) — leader-eligible nodes as a `StatefulSet` (they need stable identity for peer addressing), workers as a plain `Deployment` (they don't, which is what makes them freely scalable). A small entrypoint wrapper (`docker/leader-entrypoint.sh` / `worker-entrypoint.sh`) derives each pod's identity from its own hostname when no explicit flags are given — the same image works unmodified under both Compose and Kubernetes.
+
+**Kubernetes' own leader election was deliberately not used here.** `internal/raft` still runs the election, completely unaware it's in a pod — Kubernetes is a deployment and scaling layer on top, not a replacement for it.
+
+```bash
+./k8s-demo.sh
+```
+
+Builds the images, applies the manifests to whatever cluster your current `kubectl` context points at (defaults to Docker Desktop's built-in Kubernetes), submits a task, **scales workers 3 → 6 → 2** live, then deletes the actual current leader's *pod* and watches the survivors re-elect while Kubernetes reschedules a clean replacement:
+
+<details>
+<summary>k8s-demo.sh output (click to expand)</summary>
+
+```
+$ ./k8s-demo.sh
+
+=== Applying manifests ===
+
+NAME                      READY   STATUS    RESTARTS   AGE
+leader-0                  1/1     Running   0          5s
+leader-1                  1/1     Running   0          4s
+leader-2                  1/1     Running   0          2s
+worker-58d8db4b4b-4rx27   1/1     Running   0          5s
+worker-58d8db4b4b-7v99c   1/1     Running   0          5s
+worker-58d8db4b4b-9r8h8   1/1     Running   0          5s
+
+=== Submitting task #1 ===
+
+status: COMPLETED
+output: hello from kubernetes
+
+=== Scaling workers 3 -> 6 ===
+ ... 6 pods Running ...
+
+=== Scaling workers 6 -> 2 ===
+ ... 2 pods Running ...
+
+=== Finding the current leader ===
+
+Current leader is: leader-0
+
+=== Deleting the leader pod (leader-0) mid-run ===
+
+pod "leader-0" deleted from distributed-framework namespace
+NAME       READY   STATUS    RESTARTS   AGE
+leader-0   1/1     Running   0          8s   ← same name, a brand-new pod
+leader-1   1/1     Running   0          30s
+leader-2   1/1     Running   0          28s
+
+=== Re-election in the container logs ===
+
+raft[leader-1]: won election for term 3 with 2/3 votes
+
+=== Submitting task #2 (after the leader pod was replaced) ===
+
+status: COMPLETED
+output: still alive after pod failover
+```
+
+Full unabridged output: [k8s-demo-output.txt](k8s-demo-output.txt).
+
+</details>
+
 ## Testing
 
 ```bash
@@ -123,9 +188,11 @@ internal/raft/     Raft-inspired leader election
 internal/leader/   leader-side server: dispatch, failure detection, election wiring
 internal/worker/   worker-side client: registration, execution, leader discovery
 internal/client/   one-shot CLI caller
-docker/            Dockerfile (multi-stage, multi-target)
+docker/            Dockerfile (multi-stage, multi-target) + entrypoint wrapper scripts
 docker-compose.yml one-command cluster
-demo.sh            automated failover demo
+demo.sh            automated Compose failover demo
+k8s/               StatefulSet (leaders) + Deployment (workers) manifests
+k8s-demo.sh        automated Kubernetes failover + scaling demo
 ```
 
 ## Scope
@@ -136,3 +203,4 @@ Deliberately out of scope, as documented tradeoffs rather than gaps:
 - **A database** — results are in-memory only; the project is about distributed-systems mechanics, not persistence.
 - **Multiple scheduling policies** — round-robin only.
 - **Raft log replication** — election only, as explained above.
+- **Kubernetes' own leader election** — `internal/raft` still does this, on purpose; Kubernetes here is a deployment/scaling layer, not a replacement for the part of the project that's actually about distributed systems.
